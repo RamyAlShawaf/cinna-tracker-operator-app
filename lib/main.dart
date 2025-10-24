@@ -205,9 +205,12 @@ class _HomeScreenState extends State<HomeScreen> {
               spacing: 12,
               runSpacing: 12,
               children: [
-                ElevatedButton(onPressed: _startSession, child: const Text('Start Session')),
-                ElevatedButton(onPressed: tracking ? null : _beginTracking, child: const Text('Begin Tracking')),
-                ElevatedButton(onPressed: _endSession, child: const Text('End Trip')),
+                ElevatedButton(onPressed: publicCode == null ? null : _startSession, child: const Text('Start Session')),
+                ElevatedButton(
+                  onPressed: publicCode == null || tracking ? null : _beginTracking,
+                  child: const Text('Begin Tracking'),
+                ),
+                ElevatedButton(onPressed: publicCode == null ? null : _endSession, child: const Text('End Trip')),
               ],
             ),
             const SizedBox(height: 16),
@@ -221,20 +224,44 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 }
 
-class QrScannerScreen extends StatelessWidget {
+class QrScannerScreen extends StatefulWidget {
   const QrScannerScreen({super.key});
+
+  @override
+  State<QrScannerScreen> createState() => _QrScannerScreenState();
+}
+
+class _QrScannerScreenState extends State<QrScannerScreen> {
+  final MobileScannerController _controller = MobileScannerController();
+  bool _handled = false;
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(title: const Text('Scan QR')),
       body: MobileScanner(
-        onDetect: (capture) {
+        controller: _controller,
+        onDetect: (capture) async {
+          if (_handled) return;
           final barcodes = capture.barcodes;
           if (barcodes.isNotEmpty) {
             final value = barcodes.first.rawValue;
             if (value != null) {
-              Navigator.pop(context, value);
+              _handled = true;
+              try {
+                await _controller.stop();
+              } catch (_) {}
+              if (!mounted) return;
+              final navigator = Navigator.of(context);
+              if (navigator.canPop()) {
+                navigator.pop(value);
+              }
             }
           }
         },
