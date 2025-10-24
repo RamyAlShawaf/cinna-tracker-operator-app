@@ -35,9 +35,13 @@ class _HomeScreenState extends State<HomeScreen> {
   String? sessionId;
   String? publishToken;
   StreamSubscription<Position>? positionSub;
+  StreamSubscription<Position>? monitorSub; // used while paused for auto-resume
   bool tracking = false;
+  bool paused = false;
   String status = '';
   String serverUrl = const String.fromEnvironment('BACKEND_URL', defaultValue: 'http://10.0.2.2:3000');
+  static const double _autoResumeSpeedMps = 3.0; // ~10.8 km/h
+  DateTime? _pausedAt;
 
   @override
   void initState() {
@@ -130,9 +134,15 @@ class _HomeScreenState extends State<HomeScreen> {
       setState(() => status = 'Location permission denied');
       return;
     }
-    setState(() => tracking = true);
+    setState(() {
+      tracking = true;
+      paused = false;
+      status = 'Online';
+    });
+    await _setRemoteStatus('online');
     final url = serverUrl;
     positionSub?.cancel();
+    monitorSub?.cancel();
     positionSub = Geolocator.getPositionStream(
       locationSettings: const LocationSettings(accuracy: LocationAccuracy.bestForNavigation, distanceFilter: 10),
     ).listen((pos) async {
@@ -154,11 +164,65 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
+  Future<void> _pauseTracking() async {
+    if (publishToken == null) return;
+    positionSub?.cancel();
+    setState(() {
+      tracking = false; // no live pings
+      paused = true;
+      status = 'Paused by operator';
+    });
+    _pausedAt = DateTime.now();
+    await _setRemoteStatus('paused');
+    // Start a low-power monitor to auto-resume when speed exceeds threshold
+    monitorSub?.cancel();
+    monitorSub = Geolocator.getPositionStream(
+      locationSettings: const LocationSettings(accuracy: LocationAccuracy.low, distanceFilter: 25),
+    ).listen((pos) async {
+      final s = pos.speed; // m/s
+      if (!paused) return;
+      // Cooldown to avoid immediate auto-resume from stale fast reading
+      if (_pausedAt != null && DateTime.now().difference(_pausedAt!) < const Duration(seconds: 10)) {
+        return;
+      }
+      if (s != null && s >= _autoResumeSpeedMps) {
+        await _resumeTracking(auto: true);
+      }
+    });
+  }
+
+  Future<void> _resumeTracking({bool auto = false}) async {
+    if (publishToken == null) return;
+    monitorSub?.cancel();
+    setState(() {
+      paused = false;
+      status = auto ? 'Auto-resumed (movement detected)' : 'Resuming...';
+    });
+    _pausedAt = null;
+    await _setRemoteStatus('online');
+    await _beginTracking();
+  }
+
+  Future<void> _setRemoteStatus(String s) async {
+    final token = publishToken;
+    if (token == null) return;
+    final url = serverUrl;
+    try {
+      await http.post(
+        Uri.parse('$url/api/operator/status?token=$token'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'status': s}),
+      );
+    } catch (_) {}
+  }
+
   Future<void> _endSession() async {
     final sid = sessionId;
     if (sid == null) return;
     positionSub?.cancel();
+    monitorSub?.cancel();
     setState(() => tracking = false);
+    setState(() => paused = false);
     final url = serverUrl;
     await http.post(
       Uri.parse('$url/api/operator/session/end'),
@@ -171,6 +235,7 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void dispose() {
     positionSub?.cancel();
+    monitorSub?.cancel();
     super.dispose();
   }
 
@@ -206,10 +271,21 @@ class _HomeScreenState extends State<HomeScreen> {
               runSpacing: 12,
               children: [
                 ElevatedButton(onPressed: publicCode == null ? null : _startSession, child: const Text('Start Session')),
-                ElevatedButton(
-                  onPressed: publicCode == null || tracking ? null : _beginTracking,
-                  child: const Text('Begin Tracking'),
-                ),
+                if (!tracking && !paused)
+                  ElevatedButton(
+                    onPressed: publicCode == null ? null : _beginTracking,
+                    child: const Text('Begin Tracking'),
+                  ),
+                if (tracking && !paused)
+                  ElevatedButton(
+                    onPressed: _pauseTracking,
+                    child: const Text('Pause'),
+                  ),
+                if (paused)
+                  ElevatedButton(
+                    onPressed: () => _resumeTracking(auto: false),
+                    child: const Text('Resume'),
+                  ),
                 ElevatedButton(onPressed: publicCode == null ? null : _endSession, child: const Text('End Trip')),
               ],
             ),
