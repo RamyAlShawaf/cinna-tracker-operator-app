@@ -39,46 +39,17 @@ class _HomeScreenState extends State<HomeScreen> {
   bool tracking = false;
   bool paused = false;
   String status = '';
-  String serverUrl = const String.fromEnvironment('BACKEND_URL', defaultValue: 'http://10.0.2.2:3000');
+  String serverUrl = const String.fromEnvironment('BACKEND_URL', defaultValue: 'https://www.cinna.app');
   static const double _autoResumeSpeedMps = 3.0; // ~10.8 km/h
   DateTime? _pausedAt;
 
   @override
   void initState() {
     super.initState();
-    _loadServerUrl();
+    // Server URL is fixed to production, but can be overridden via --dart-define
   }
 
-  Future<void> _loadServerUrl() async {
-    final prefs = await SharedPreferences.getInstance();
-    final saved = prefs.getString('server_url');
-    if (saved != null && saved.isNotEmpty) {
-      setState(() => serverUrl = saved);
-    }
-  }
-
-  Future<void> _editServerUrl() async {
-    final controller = TextEditingController(text: serverUrl);
-    final v = await showDialog<String>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Server URL'),
-        content: TextField(
-          controller: controller,
-          decoration: const InputDecoration(hintText: 'http://192.168.x.x:3000'),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-          TextButton(onPressed: () => Navigator.pop(ctx, controller.text.trim()), child: const Text('Save')),
-        ],
-      ),
-    );
-    if (v != null && v.isNotEmpty) {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString('server_url', v);
-      setState(() => serverUrl = v);
-    }
-  }
+  // Server URL is not editable in production builds
 
   Future<void> _scanQr() async {
     final code = await Navigator.push<String>(
@@ -245,7 +216,7 @@ class _HomeScreenState extends State<HomeScreen> {
       appBar: AppBar(
         title: const Text('Operator'),
         actions: [
-          IconButton(onPressed: _editServerUrl, icon: const Icon(Icons.settings)),
+          // Settings removed: server URL is fixed
         ],
       ),
       body: SingleChildScrollView(
@@ -290,8 +261,6 @@ class _HomeScreenState extends State<HomeScreen> {
               ],
             ),
             const SizedBox(height: 16),
-            Text('Server: $serverUrl'),
-            const SizedBox(height: 8),
             Text('Status: $status'),
           ],
         ),

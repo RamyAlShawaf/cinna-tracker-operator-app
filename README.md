@@ -12,13 +12,16 @@ Run
 # 1) Make sure you're in the correct folder (underscores, not hyphens)
 cd /Users/ramy/Documents/Personal/Cinna/Github/cinna_tracker_operator_app
 
-# 2) iOS simulator (localhost works)
+# By default, the app talks to production at https://www.cinna.app
+
+# For local/dev testing you can override the backend URL:
+# iOS simulator (localhost works)
 flutter run -d ios --dart-define=BACKEND_URL=http://localhost:3000
 
-# OR Android emulator (use 10.0.2.2 for host machine localhost)
+# Android emulator (use 10.0.2.2 for host machine localhost)
 flutter run -d android --dart-define=BACKEND_URL=http://10.0.2.2:3000
 
-# OR physical device on same Wi‑Fi (replace with your Mac's LAN IP)
+# Physical device on same Wi‑Fi (replace with your Mac's LAN IP)
 flutter run --dart-define=BACKEND_URL=http://192.168.x.x:3000
 ```
 
