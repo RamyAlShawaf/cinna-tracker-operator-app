@@ -19,6 +19,8 @@ dependencies:
   flutter_foreground_task: ^6.3.1
   http: ^1.2.2
   shared_preferences: ^2.3.2
+  flutter_map: ^6.2.1
+  latlong2: ^0.9.0
 
   # If using Supabase Realtime in the app (optional)
   supabase_flutter: ^2.6.0
@@ -27,6 +29,30 @@ dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^4.0.0
+  flutter_launcher_icons: ^0.13.1
 
 flutter:
   uses-material-design: true
+
+# App icon generation config
+flutter_launcher_icons:
+  image_path: assets/app_icon.png
+  android: true
+  ios: true
+  min_sdk_android: 21
+  adaptive_icon_background: "#0B0C0F"
+  adaptive_icon_foreground: assets/app_icon.png
+  web:
+    generate: true
+    image_path: assets/app_icon.png
+    background_color: "#0B0C0F"
+    theme_color: "#10B981"
+  macos:
+    generate: true
+    image_path: assets/app_icon.png
+  windows:
+    generate: true
+    image_path: assets/app_icon.png
+  linux:
+    generate: true
+    image_path: assets/app_icon.png
