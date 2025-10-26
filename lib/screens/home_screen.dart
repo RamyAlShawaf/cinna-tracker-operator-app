@@ -3,6 +3,7 @@ import '../theme/theme_controller.dart';
 import '../widgets/theme_mode_button.dart';
 import 'qr_scanner_screen.dart';
 import 'tracking_screen.dart';
+import 'trip_select_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   final ThemeController themeController;
@@ -37,10 +38,25 @@ class _HomeScreenState extends State<HomeScreen> {
     if (!mounted) return;
     if (code != null && code.isNotEmpty) {
       final publicCode = _extractCode(code);
-      Navigator.push(
+      final result = await Navigator.push<Map<String, dynamic>>(
         context,
-        MaterialPageRoute(builder: (_) => TrackingScreen(publicCode: publicCode, themeController: widget.themeController)),
+        MaterialPageRoute(
+          builder: (_) => TripSelectScreen(publicCode: publicCode, themeController: widget.themeController),
+        ),
       );
+      if (!mounted) return;
+      if (result != null) {
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (_) => TrackingScreen(
+              publicCode: publicCode,
+              themeController: widget.themeController,
+              sessionInfo: result,
+            ),
+          ),
+        );
+      }
     }
   }
 

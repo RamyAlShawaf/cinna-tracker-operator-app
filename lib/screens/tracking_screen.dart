@@ -12,7 +12,8 @@ import '../widgets/theme_mode_button.dart';
 class TrackingScreen extends StatefulWidget {
   final String publicCode;
   final ThemeController themeController;
-  const TrackingScreen({super.key, required this.publicCode, required this.themeController});
+  final Map<String, dynamic>? sessionInfo;
+  const TrackingScreen({super.key, required this.publicCode, required this.themeController, this.sessionInfo});
 
   @override
   State<TrackingScreen> createState() => _TrackingScreenState();
@@ -33,6 +34,28 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
 
   bool get _usingMapTiler => const String.fromEnvironment('MAPTILER_KEY', defaultValue: '').isNotEmpty;
 
+  List<Map<String, dynamic>> _stops = const [];
+  String? _selectedStopId;
+  List<LatLng> _route = const [];
+  bool _loadingStops = false;
+  bool _loadingRoute = false;
+
+  @override
+  void initState() {
+    super.initState();
+    final info = widget.sessionInfo;
+    if (info != null) {
+      sessionId = info['session_id'] as String?;
+      publishToken = info['publish_token'] as String?;
+      if (sessionId != null && publishToken != null) {
+        sessionStarted = true;
+        status = 'Session ready';
+        // Fetch stops when session is ready
+        unawaited(_fetchStops());
+      }
+    }
+  }
+
   String _tileUrl({required bool isDark}) {
     final key = const String.fromEnvironment('MAPTILER_KEY', defaultValue: '');
     final dark = const String.fromEnvironment('MAP_STYLE_DARK', defaultValue: 'basic-v2-dark');
@@ -42,6 +65,56 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
       return 'https://api.maptiler.com/maps/$style/{z}/{x}/{y}@2x.png?key=$key';
     }
     return 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
+  }
+
+  Future<void> _fetchStops() async {
+    final sid = sessionId;
+    if (sid == null) return;
+    setState(() { _loadingStops = true; });
+    try {
+      final r = await http.get(Uri.parse('$serverUrl/api/operator/session/stops?session_id=$sid'));
+      if (r.statusCode == 200) {
+        final j = jsonDecode(r.body) as Map<String, dynamic>;
+        final list = (j['stops'] as List<dynamic>? ?? []).cast<Map<String, dynamic>>();
+        setState(() { _stops = list; });
+      }
+    } catch (_) {}
+    setState(() { _loadingStops = false; });
+  }
+
+  Future<void> _fetchRouteToStop(String stopId) async {
+    final sid = sessionId;
+    if (sid == null || _current == null) return;
+    final stop = _stops.firstWhere((s) => s['id'] == stopId, orElse: () => {});
+    if (stop.isEmpty) return;
+    final toLat = stop['lat'] as num?;
+    final toLng = stop['lng'] as num?;
+    if (toLat == null || toLng == null) return;
+    setState(() { _loadingRoute = true; _route = const []; });
+    try {
+      final url = Uri.parse('$serverUrl/api/operator/route?from_lat=${_current!.latitude}&from_lng=${_current!.longitude}&to_lat=$toLat&to_lng=$toLng');
+      final r = await http.get(url);
+      if (r.statusCode == 200) {
+        final j = jsonDecode(r.body) as Map<String, dynamic>;
+        final coords = (j['coordinates'] as List<dynamic>? ?? []);
+        final poly = <LatLng>[];
+        for (final c in coords) {
+          final m = c as Map<String, dynamic>;
+          final lat = (m['lat'] as num?)?.toDouble();
+          final lng = (m['lng'] as num?)?.toDouble();
+          if (lat != null && lng != null) poly.add(LatLng(lat, lng));
+        }
+        setState(() { _route = poly; });
+      }
+    } catch (_) {}
+    setState(() { _loadingRoute = false; });
+  }
+
+  Map<String, dynamic>? _routeJson() {
+    if (_route.isEmpty) return null;
+    return {
+      'coordinates': _route.map((p) => {'lat': p.latitude, 'lng': p.longitude}).toList(),
+    };
   }
 
   Future<void> _startSession() async {
@@ -60,6 +133,7 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
         publishToken = data['publish_token'] as String?;
         sessionStarted = true;
         status = 'Session started';
+        unawaited(_fetchStops());
       } else {
         status = 'Failed: ${r.statusCode} ${r.body}';
       }
@@ -67,6 +141,16 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
       status = 'Network error: $e';
     }
     if (mounted) setState(() {});
+  }
+
+  Future<void> _ensureSessionThenBeginTracking({required bool follow}) async {
+    if (!sessionStarted || publishToken == null) {
+      await _startSession();
+    }
+    if (!sessionStarted || publishToken == null) {
+      return; // start failed; status already set
+    }
+    await _beginTracking(follow: follow);
   }
 
   Future<void> _beginTracking({required bool follow}) async {
@@ -100,6 +184,7 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
         'heading': pos.heading,
         'accuracy': pos.accuracy,
         'ts': DateTime.now().toIso8601String(),
+        'route': _routeJson(),
       };
       try {
         await http.post(
@@ -108,18 +193,12 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
           body: jsonEncode(payload),
         );
       } catch (_) {}
+      if (_selectedStopId != null) {
+        // refresh route occasionally or first time when current updates
+        unawaited(_fetchRouteToStop(_selectedStopId!));
+      }
       if (mounted) setState(() {});
     });
-  }
-
-  Future<void> _ensureSessionThenBeginTracking({required bool follow}) async {
-    if (!sessionStarted || publishToken == null) {
-      await _startSession();
-    }
-    if (!sessionStarted || publishToken == null) {
-      return; // start failed; status already set
-    }
-    await _beginTracking(follow: follow);
   }
 
   Future<void> _pauseTracking() async {
@@ -230,6 +309,12 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
                               urlTemplate: _tileUrl(isDark: isDark),
                               userAgentPackageName: 'cinna_tracker_operator_app',
                             ),
+                            if (_route.isNotEmpty)
+                              PolylineLayer(
+                                polylines: [
+                                  Polyline(points: _route, strokeWidth: 4, color: Colors.blueAccent.withOpacity(0.8)),
+                                ],
+                              ),
                             if (_current != null)
                               MarkerLayer(
                                 markers: [
@@ -293,37 +378,72 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
                       16,
                       12 + MediaQuery.of(context).padding.bottom,
                     ),
-                    child: Row(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
                       children: [
-                        Expanded(
-                          child: Builder(
-                            builder: (context) {
-                              if (!tracking && !paused) {
-                                return FilledButton(
-                                  onPressed: () => _ensureSessionThenBeginTracking(follow: true),
-                                  child: const Text('Begin Tracking'),
-                                );
-                              } else if (tracking && !paused) {
-                                return FilledButton.tonal(
-                                  onPressed: _pauseTracking,
-                                  child: const Text('Pause'),
-                                );
-                              } else {
-                                return FilledButton(
-                                  onPressed: _resumeTracking,
-                                  child: const Text('Resume'),
-                                );
-                              }
-                            },
+                        // Stop selector
+                        if (sessionStarted)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 10),
+                            child: Row(
+                              children: [
+                                Expanded(
+                                  child: DropdownButtonFormField<String>(
+                                    isExpanded: true,
+                                    value: _selectedStopId,
+                                    items: _stops.map((s) {
+                                      return DropdownMenuItem<String>(
+                                        value: s['id'] as String,
+                                        child: Text('#${s['sequence']} · ${s['name']}', overflow: TextOverflow.ellipsis),
+                                      );
+                                    }).toList(),
+                                    onChanged: (val) {
+                                      setState(() { _selectedStopId = val; });
+                                      if (val != null) { unawaited(_fetchRouteToStop(val)); }
+                                    },
+                                    decoration: const InputDecoration(
+                                      labelText: 'Destination stop',
+                                    ),
+                                  ),
+                                ),
+                                if (_loadingStops) const SizedBox(width: 10),
+                                if (_loadingStops) const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)),
+                              ],
+                            ),
                           ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: FilledButton(
-                            style: FilledButton.styleFrom(backgroundColor: Colors.red.shade600),
-                            onPressed: _confirmEndTrip,
-                            child: const Text('End Trip'),
-                          ),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Builder(
+                                builder: (context) {
+                                  if (!tracking && !paused) {
+                                    return FilledButton(
+                                      onPressed: () => _ensureSessionThenBeginTracking(follow: true),
+                                      child: const Text('Begin Tracking'),
+                                    );
+                                  } else if (tracking && !paused) {
+                                    return FilledButton.tonal(
+                                      onPressed: _pauseTracking,
+                                      child: const Text('Pause'),
+                                    );
+                                  } else {
+                                    return FilledButton(
+                                      onPressed: _resumeTracking,
+                                      child: const Text('Resume'),
+                                    );
+                                  }
+                                },
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: FilledButton(
+                                style: FilledButton.styleFrom(backgroundColor: Colors.red.shade600),
+                                onPressed: _confirmEndTrip,
+                                child: const Text('End Trip'),
+                              ),
+                            ),
+                          ],
                         ),
                       ],
                     ),
