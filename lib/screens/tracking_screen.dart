@@ -43,6 +43,7 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
   LatLng? _toLatLng;
   bool _followOnUpdate = false;
   bool _bgTrackingActive = false;
+  bool _sentInitialPing = false;
 
   bool get _usingMapTiler => const String.fromEnvironment('MAPTILER_KEY', defaultValue: '').isNotEmpty;
 
@@ -128,7 +129,7 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
     setState(() { _loadingStops = false; });
   }
 
-  Future<void> _fetchRouteToStop(String stopId) async {
+  Future<void> _fetchRouteToStop(String stopId, {bool postAfter = false}) async {
     final sid = sessionId;
     if (sid == null || _current == null) return;
     final stop = _stops.firstWhere((s) => s['id'] == stopId, orElse: () => {});
@@ -151,6 +152,9 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
           if (lat != null && lng != null) poly.add(LatLng(lat, lng));
         }
         setState(() { _route = poly; });
+        if (postAfter) {
+          await _postRoutePing();
+        }
       }
     } catch (_) {}
     setState(() { _loadingRoute = false; });
@@ -161,6 +165,67 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
     return {
       'coordinates': _route.map((p) => {'lat': p.latitude, 'lng': p.longitude}).toList(),
     };
+  }
+
+  Future<void> _postRoutePing() async {
+    final token = publishToken;
+    final cur = _current;
+    if (token == null || cur == null) return;
+    try {
+      await http.post(
+        Uri.parse('$serverUrl/api/operator/ping?token=$token'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'lat': cur.latitude,
+          'lng': cur.longitude,
+          'route': _routeJson(),
+        }),
+      );
+    } catch (_) {}
+  }
+
+  Future<void> _postLivePing({
+    required double lat,
+    required double lng,
+    double? speed,
+    double? heading,
+    double? accuracy,
+    Map<String, dynamic>? route,
+  }) async {
+    final token = publishToken;
+    if (token == null) return;
+    try {
+      await http.post(
+        Uri.parse('$serverUrl/api/operator/ping?token=$token'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'lat': lat,
+          'lng': lng,
+          if (speed != null) 'speed': speed,
+          if (heading != null) 'heading': heading,
+          if (accuracy != null) 'accuracy': accuracy,
+          if (route != null) 'route': route,
+        }),
+      );
+    } catch (_) {}
+  }
+
+  Future<void> _sendImmediatePing() async {
+    try {
+      final last = await Geolocator.getLastKnownPosition();
+      Position? pos = last;
+      if (pos == null) {
+        pos = await Geolocator.getCurrentPosition(desiredAccuracy: LocationAccuracy.best);
+      }
+      await _postLivePing(
+        lat: pos.latitude,
+        lng: pos.longitude,
+        speed: pos.speed,
+        heading: pos.heading,
+        accuracy: pos.accuracy,
+        route: _routeJson(),
+      );
+    } catch (_) {}
   }
 
   Future<void> _startSession() async {
@@ -212,6 +277,7 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
       status = 'Online';
     });
     _followOnUpdate = follow;
+    _sentInitialPing = false;
     await _setRemoteStatus('online');
     positionSub?.cancel();
     positionSub = Geolocator.getPositionStream(
@@ -220,6 +286,17 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
       final next = LatLng(pos.latitude, pos.longitude);
       _current = next;
       _startMarkerAnimation(next);
+      if (!_sentInitialPing) {
+        _sentInitialPing = true;
+        unawaited(_postLivePing(
+          lat: pos.latitude,
+          lng: pos.longitude,
+          speed: pos.speed,
+          heading: pos.heading,
+          accuracy: pos.accuracy,
+          route: _routeJson(),
+        ));
+      }
       if (_selectedStopId != null) {
         unawaited(_fetchRouteToStop(_selectedStopId!));
       }
@@ -227,6 +304,7 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
     });
 
     await _startBackgroundLocator();
+    unawaited(_sendImmediatePing());
   }
 
   Future<void> _pauseTracking() async {
@@ -467,9 +545,9 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
                                         child: Text('#${s['sequence']} · ${s['name']}', overflow: TextOverflow.ellipsis),
                                       );
                                     }).toList(),
-                                    onChanged: (val) {
+                                    onChanged: (val) async {
                                       setState(() { _selectedStopId = val; });
-                                      if (val != null) { unawaited(_fetchRouteToStop(val)); }
+                                      if (val != null) { await _fetchRouteToStop(val, postAfter: true); }
                                     },
                                     decoration: const InputDecoration(
                                       labelText: 'Destination stop',
