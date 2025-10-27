@@ -3,6 +3,11 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:background_locator_2/background_locator.dart' as bl;
+import 'package:background_locator_2/settings/android_settings.dart' as bl_settings;
+import 'package:background_locator_2/settings/ios_settings.dart' as bl_settings;
+import 'package:background_locator_2/settings/locator_settings.dart' as bl_loc;
+import '../background/location_callbacks.dart' as bg;
 import 'package:http/http.dart' as http;
 import 'package:latlong2/latlong.dart';
 import '../theme/theme_controller.dart';
@@ -30,7 +35,14 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
   final MapController _mapController = MapController();
   StreamSubscription<Position>? positionSub;
   LatLng? _current;
+  // Smooth marker animation state
+  LatLng? _displayed;
+  AnimationController? _markerAnimController;
+  CurvedAnimation? _markerCurve;
+  LatLng? _fromLatLng;
+  LatLng? _toLatLng;
   bool _followOnUpdate = false;
+  bool _bgTrackingActive = false;
 
   bool get _usingMapTiler => const String.fromEnvironment('MAPTILER_KEY', defaultValue: '').isNotEmpty;
 
@@ -43,6 +55,20 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
   @override
   void initState() {
     super.initState();
+    _markerAnimController = AnimationController(vsync: this, duration: const Duration(milliseconds: 900));
+    _markerCurve = CurvedAnimation(parent: _markerAnimController!, curve: Curves.easeInOut);
+    _markerAnimController!.addListener(() {
+      if (_fromLatLng != null && _toLatLng != null) {
+        final t = _markerCurve!.value;
+        final lat = _fromLatLng!.latitude + (_toLatLng!.latitude - _fromLatLng!.latitude) * t;
+        final lng = _fromLatLng!.longitude + (_toLatLng!.longitude - _fromLatLng!.longitude) * t;
+        _displayed = LatLng(lat, lng);
+        if (_followOnUpdate) {
+          try { _mapController.move(_displayed!, 15); } catch (_) {}
+        }
+        if (mounted) setState(() {});
+      }
+    });
     final info = widget.sessionInfo;
     if (info != null) {
       sessionId = info['session_id'] as String?;
@@ -65,6 +91,26 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
       return 'https://api.maptiler.com/maps/$style/{z}/{x}/{y}@2x.png?key=$key';
     }
     return 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
+  }
+
+  void _startMarkerAnimation(LatLng target) {
+    // Initialize displayed position if this is the first point
+    if (_displayed == null) {
+      _displayed = target;
+      if (mounted) setState(() {});
+      return;
+    }
+    _fromLatLng = _displayed;
+    _toLatLng = target;
+    // If controller isn't available, snap
+    final controller = _markerAnimController;
+    if (controller == null) {
+      _displayed = target;
+      if (mounted) setState(() {});
+      return;
+    }
+    controller.reset();
+    controller.forward();
   }
 
   Future<void> _fetchStops() async {
@@ -171,34 +217,16 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
     positionSub = Geolocator.getPositionStream(
       locationSettings: const LocationSettings(accuracy: LocationAccuracy.bestForNavigation, distanceFilter: 10),
     ).listen((pos) async {
-      _current = LatLng(pos.latitude, pos.longitude);
-      if (_followOnUpdate) {
-        try {
-          _mapController.move(_current!, 15);
-        } catch (_) {}
-      }
-      final payload = {
-        'lat': pos.latitude,
-        'lng': pos.longitude,
-        'speed': pos.speed,
-        'heading': pos.heading,
-        'accuracy': pos.accuracy,
-        'ts': DateTime.now().toIso8601String(),
-        'route': _routeJson(),
-      };
-      try {
-        await http.post(
-          Uri.parse('$serverUrl/api/operator/ping?token=$publishToken'),
-          headers: {'Content-Type': 'application/json'},
-          body: jsonEncode(payload),
-        );
-      } catch (_) {}
+      final next = LatLng(pos.latitude, pos.longitude);
+      _current = next;
+      _startMarkerAnimation(next);
       if (_selectedStopId != null) {
-        // refresh route occasionally or first time when current updates
         unawaited(_fetchRouteToStop(_selectedStopId!));
       }
       if (mounted) setState(() {});
     });
+
+    await _startBackgroundLocator();
   }
 
   Future<void> _pauseTracking() async {
@@ -210,6 +238,7 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
       status = 'Paused';
     });
     await _setRemoteStatus('paused');
+    await _stopBackgroundLocator();
   }
 
   Future<void> _resumeTracking() async {
@@ -240,6 +269,7 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
       } catch (_) {}
     }
     await positionSub?.cancel();
+    await _stopBackgroundLocator();
     if (!mounted) return;
     Navigator.pop(context);
   }
@@ -275,7 +305,47 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
   @override
   void dispose() {
     positionSub?.cancel();
+    _markerAnimController?.dispose();
+    unawaited(_stopBackgroundLocator());
     super.dispose();
+  }
+
+  Future<void> _startBackgroundLocator() async {
+    if (_bgTrackingActive) return;
+    final token = publishToken;
+    if (token == null) return;
+    try {
+      await bl.BackgroundLocator.initialize();
+      await bl.BackgroundLocator.registerLocationUpdate(
+        bg.bgLocationCallback,
+        initCallback: bg.bgInitCallback,
+        disposeCallback: bg.bgDisposeCallback,
+        initDataCallback: {
+          'server_url': serverUrl,
+          'publish_token': token,
+        },
+        iosSettings: bl_settings.IOSSettings(
+          accuracy: bl_loc.LocationAccuracy.NAVIGATION,
+          distanceFilter: 10,
+          stopWithTerminate: false,
+        ),
+        androidSettings: bl_settings.AndroidSettings(
+          accuracy: bl_loc.LocationAccuracy.NAVIGATION,
+          interval: 5,
+          distanceFilter: 10,
+        ),
+        autoStop: false,
+      );
+      _bgTrackingActive = true;
+    } catch (_) {}
+  }
+
+  Future<void> _stopBackgroundLocator() async {
+    if (!_bgTrackingActive) return;
+    try {
+      await bl.BackgroundLocator.unRegisterLocationUpdate();
+    } catch (_) {}
+    _bgTrackingActive = false;
   }
 
   @override
@@ -301,7 +371,7 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
                       ? FlutterMap(
                           mapController: _mapController,
                           options: MapOptions(
-                            initialCenter: _current ?? const LatLng(0, 0),
+                            initialCenter: _displayed ?? _current ?? const LatLng(0, 0),
                             initialZoom: 3,
                           ),
                           children: [
@@ -319,7 +389,7 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
                               MarkerLayer(
                                 markers: [
                                   Marker(
-                                    point: _current!,
+                                    point: _displayed ?? _current!,
                                     width: 80,
                                     height: 80,
                                     alignment: Alignment.center,
