@@ -105,6 +105,10 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
           if (lat != null && lng != null) poly.add(LatLng(lat, lng));
         }
         setState(() { _route = poly; });
+        // Immediately publish route so backend reflects it without waiting for next GPS tick
+        if (tracking && !paused) {
+          unawaited(_publishRouteUpdate());
+        }
       }
     } catch (_) {}
     setState(() { _loadingRoute = false; });
@@ -242,6 +246,36 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
     await positionSub?.cancel();
     if (!mounted) return;
     Navigator.pop(context);
+  }
+
+  Future<void> _setRemoteDestination(String stopId) async {
+    final token = publishToken;
+    if (token == null) return;
+    try {
+      await http.post(
+        Uri.parse('$serverUrl/api/operator/destination?token=$token'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'stop_id': stopId}),
+      );
+    } catch (_) {}
+  }
+
+  Future<void> _publishRouteUpdate() async {
+    final token = publishToken;
+    final pos = _current;
+    if (token == null || pos == null) return;
+    final payload = {
+      'lat': pos.latitude,
+      'lng': pos.longitude,
+      'route': _routeJson(),
+    };
+    try {
+      await http.post(
+        Uri.parse('$serverUrl/api/operator/ping?token=$token'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode(payload),
+      );
+    } catch (_) {}
   }
 
   Future<void> _confirmEndTrip() async {
@@ -399,7 +433,10 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
                                     }).toList(),
                                     onChanged: (val) {
                                       setState(() { _selectedStopId = val; });
-                                      if (val != null) { unawaited(_fetchRouteToStop(val)); }
+                                      if (val != null) {
+                                        unawaited(_fetchRouteToStop(val));
+                                        unawaited(_setRemoteDestination(val));
+                                      }
                                     },
                                     decoration: const InputDecoration(
                                       labelText: 'Destination stop',
