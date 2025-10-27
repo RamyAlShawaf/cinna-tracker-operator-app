@@ -36,11 +36,6 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
-        <!-- Background locator service -->
-        <service
-            android:name="yukams.app.background_locator_2.IsolateHolderService"
-            android:exported="false"
-            android:foregroundServiceType="location" />
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data

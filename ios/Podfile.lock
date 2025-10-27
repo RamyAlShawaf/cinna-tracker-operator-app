@@ -1,8 +1,6 @@
 PODS:
   - app_links (6.4.1):
     - Flutter
-  - background_locator_2 (0.0.1):
-    - Flutter
   - Flutter (1.0.0)
   - flutter_foreground_task (0.0.1):
     - Flutter
@@ -23,7 +21,6 @@ PODS:
 
 DEPENDENCIES:
   - app_links (from `.symlinks/plugins/app_links/ios`)
-  - background_locator_2 (from `.symlinks/plugins/background_locator_2/ios`)
   - Flutter (from `Flutter`)
   - flutter_foreground_task (from `.symlinks/plugins/flutter_foreground_task/ios`)
   - geolocator_apple (from `.symlinks/plugins/geolocator_apple/darwin`)
@@ -35,8 +32,6 @@ DEPENDENCIES:
 EXTERNAL SOURCES:
   app_links:
     :path: ".symlinks/plugins/app_links/ios"
-  background_locator_2:
-    :path: ".symlinks/plugins/background_locator_2/ios"
   Flutter:
     :path: Flutter
   flutter_foreground_task:
@@ -54,7 +49,6 @@ EXTERNAL SOURCES:
 
 SPEC CHECKSUMS:
   app_links: 3dbc685f76b1693c66a6d9dd1e9ab6f73d97dc0a
-  background_locator_2: bee147151ed151802ee8f1cc02f55ee14f77a2e3
   Flutter: cabc95a1d2626b1b06e7179b784ebcf0c0cde467
   flutter_foreground_task: a159d2c2173b33699ddb3e6c2a067045d7cebb89
   geolocator_apple: ab36aa0e8b7d7a2d7639b3b4e48308394e8cef5e
