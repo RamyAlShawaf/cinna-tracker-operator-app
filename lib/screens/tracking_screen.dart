@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+// import 'dart:math' as math; // no longer needed after removing raindrop pin
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:geolocator/geolocator.dart';
@@ -104,7 +105,12 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
           final lng = (m['lng'] as num?)?.toDouble();
           if (lat != null && lng != null) poly.add(LatLng(lat, lng));
         }
-        setState(() { _route = poly; });
+        // Only store/display the route when not paused
+        if (!paused) {
+          setState(() { _route = poly; });
+        } else {
+          setState(() {});
+        }
         // Immediately publish route so backend reflects it without waiting for next GPS tick
         if (tracking && !paused) {
           unawaited(_publishRouteUpdate());
@@ -214,10 +220,18 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
       status = 'Paused';
     });
     await _setRemoteStatus('paused');
+    // Clear the published route immediately so consumers stop rendering guidance
+    setState(() { _route = const []; });
+    await _publishRouteUpdate();
   }
 
   Future<void> _resumeTracking() async {
     await _beginTracking(follow: false);
+    // On resume, publish route for the currently selected destination
+    final dest = _selectedStopId;
+    if (dest != null) {
+      unawaited(_fetchRouteToStop(dest));
+    }
   }
 
   Future<void> _setRemoteStatus(String s) async {
@@ -343,10 +357,36 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
                               urlTemplate: _tileUrl(isDark: isDark),
                               userAgentPackageName: 'cinna_tracker_operator_app',
                             ),
-                            if (_route.isNotEmpty)
+                            if (_route.isNotEmpty && !paused)
                               PolylineLayer(
                                 polylines: [
-                                  Polyline(points: _route, strokeWidth: 4, color: Colors.blueAccent.withOpacity(0.8)),
+                                  Polyline(
+                                    points: _route,
+                                    strokeWidth: 4,
+                                    color: (isDark ? Colors.white : Colors.black).withOpacity(0.9),
+                                  ),
+                                ],
+                              ),
+                            if (_route.isNotEmpty && !paused)
+                              MarkerLayer(
+                                markers: [
+                                  Marker(
+                                    point: _route.last,
+                                    width: 20,
+                                    height: 20,
+                                    alignment: Alignment.center,
+                                    child: Container(
+                                      width: 16,
+                                      height: 16,
+                                      decoration: BoxDecoration(
+                                        color: isDark ? Colors.black : Colors.white,
+                                        border: Border.all(color: isDark ? Colors.white : Colors.black, width: 3),
+                                        boxShadow: [
+                                          BoxShadow(color: Colors.black.withOpacity(0.15), blurRadius: 6, offset: const Offset(0, 2)),
+                                        ],
+                                      ),
+                                    ),
+                                  ),
                                 ],
                               ),
                             if (_current != null)
