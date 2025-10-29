@@ -4,6 +4,7 @@ import '../widgets/theme_mode_button.dart';
 import 'qr_scanner_screen.dart';
 import 'tracking_screen.dart';
 import 'trip_select_screen.dart';
+import 'vehicle_photo_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   final ThemeController themeController;
@@ -38,6 +39,14 @@ class _HomeScreenState extends State<HomeScreen> {
     if (!mounted) return;
     if (code != null && code.isNotEmpty) {
       final publicCode = _extractCode(code);
+      final photoOk = await Navigator.push<bool>(
+        context,
+        MaterialPageRoute(
+          builder: (_) => VehiclePhotoScreen(publicCode: publicCode, themeController: widget.themeController),
+        ),
+      );
+      if (!mounted) return;
+      if (photoOk != true) return; // cancelled or failed
       final result = await Navigator.push<Map<String, dynamic>>(
         context,
         MaterialPageRoute(
