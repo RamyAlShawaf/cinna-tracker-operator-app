@@ -40,6 +40,8 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
   List<LatLng> _route = const [];
   bool _loadingStops = false;
   bool _loadingRoute = false;
+  bool _routeFetchInFlight = false;
+  DateTime? _lastRouteFetchAt;
 
   @override
   void initState() {
@@ -86,11 +88,13 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
   Future<void> _fetchRouteToStop(String stopId) async {
     final sid = sessionId;
     if (sid == null || _current == null) return;
+    if (_routeFetchInFlight) return;
     final stop = _stops.firstWhere((s) => s['id'] == stopId, orElse: () => {});
     if (stop.isEmpty) return;
     final toLat = stop['lat'] as num?;
     final toLng = stop['lng'] as num?;
     if (toLat == null || toLng == null) return;
+    _routeFetchInFlight = true;
     setState(() { _loadingRoute = true; _route = const []; });
     try {
       final url = Uri.parse('$serverUrl/api/operator/route?from_lat=${_current!.latitude}&from_lng=${_current!.longitude}&to_lat=$toLat&to_lng=$toLng');
@@ -111,12 +115,14 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
         } else {
           setState(() {});
         }
-        // Immediately publish route so backend reflects it without waiting for next GPS tick
+        _lastRouteFetchAt = DateTime.now();
+        // Ensure backend route is populated immediately (even before next GPS tick)
         if (tracking && !paused) {
-          unawaited(_publishRouteUpdate());
+          unawaited(_setRemoteRoute(_routeJson()));
         }
       }
     } catch (_) {}
+    _routeFetchInFlight = false;
     setState(() { _loadingRoute = false; });
   }
 
@@ -173,7 +179,7 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
     setState(() {
       tracking = true;
       paused = false;
-      status = 'Online';
+      status = 'Active';
     });
     _followOnUpdate = follow;
     await _setRemoteStatus('online');
@@ -204,8 +210,13 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
         );
       } catch (_) {}
       if (_selectedStopId != null) {
-        // refresh route occasionally or first time when current updates
-        unawaited(_fetchRouteToStop(_selectedStopId!));
+        // Refresh route occasionally after resume or on movement
+        final shouldRefresh = _route.isEmpty ||
+            (_lastRouteFetchAt == null) ||
+            DateTime.now().difference(_lastRouteFetchAt!) > const Duration(seconds: 30);
+        if (shouldRefresh && !_routeFetchInFlight) {
+          unawaited(_fetchRouteToStop(_selectedStopId!));
+        }
       }
       if (mounted) setState(() {});
     });
@@ -220,9 +231,8 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
       status = 'Paused';
     });
     await _setRemoteStatus('paused');
-    // Clear the published route immediately so consumers stop rendering guidance
+    // Locally clear the route so the UI reflects paused state immediately
     setState(() { _route = const []; });
-    await _publishRouteUpdate();
   }
 
   Future<void> _resumeTracking() async {
@@ -274,20 +284,16 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
     } catch (_) {}
   }
 
-  Future<void> _publishRouteUpdate() async {
+  // Removed immediate route publish; route will be included on the next ping
+
+  Future<void> _setRemoteRoute(Map<String, dynamic>? route) async {
     final token = publishToken;
-    final pos = _current;
-    if (token == null || pos == null) return;
-    final payload = {
-      'lat': pos.latitude,
-      'lng': pos.longitude,
-      'route': _routeJson(),
-    };
+    if (token == null) return;
     try {
-      await http.post(
-        Uri.parse('$serverUrl/api/operator/ping?token=$token'),
+      await http.patch(
+        Uri.parse('$serverUrl/api/operator/route/update?token=$token'),
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode(payload),
+        body: jsonEncode({'route': route}),
       );
     } catch (_) {}
   }
@@ -426,7 +432,7 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
                         child: Chip(
                           label: Text(status),
                           avatar: Icon(
-                            status == 'Online'
+                            status == 'Active'
                                 ? Icons.wifi_tethering
                                 : (status == 'Paused' ? Icons.pause_circle : Icons.hourglass_top),
                           ),
