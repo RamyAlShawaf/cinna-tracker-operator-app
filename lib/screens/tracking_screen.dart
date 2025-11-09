@@ -403,7 +403,7 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
                                     width: 80,
                                     height: 80,
                                     alignment: Alignment.center,
-                                    child: const PulsingDot(),
+                                    child: PulsingDot(paused: paused),
                                   ),
                                 ],
                               ),

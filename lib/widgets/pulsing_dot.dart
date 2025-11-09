@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 
 class PulsingDot extends StatefulWidget {
-  const PulsingDot({super.key});
+  const PulsingDot({super.key, this.paused = false});
+
+  final bool paused;
 
   @override
   State<PulsingDot> createState() => _PulsingDotState();
@@ -24,6 +26,11 @@ class _PulsingDotState extends State<PulsingDot> with SingleTickerProviderStateM
 
   @override
   Widget build(BuildContext context) {
+    // Colors:
+    // Active (online): emerald (#14B8A6)
+    // Paused: orange/amber (#F59E0B)
+    final Color baseColor = widget.paused ? const Color(0xFFF59E0B) : const Color(0xFF14B8A6);
+    final Color ringColor = widget.paused ? const Color(0x59F59E0B) : const Color(0x5914B8A6);
     return SizedBox(
       width: 28,
       height: 28,
@@ -41,8 +48,8 @@ class _PulsingDotState extends State<PulsingDot> with SingleTickerProviderStateM
                 child: Container(
                   width: 18 * scale,
                   height: 18 * scale,
-                  decoration: const BoxDecoration(
-                    color: Color(0x5914B8A6),
+                  decoration: BoxDecoration(
+                    color: ringColor,
                     shape: BoxShape.circle,
                   ),
                 ),
@@ -53,11 +60,11 @@ class _PulsingDotState extends State<PulsingDot> with SingleTickerProviderStateM
             width: 18,
             height: 18,
             decoration: BoxDecoration(
-              color: const Color(0xFF14B8A6),
+              color: baseColor,
               shape: BoxShape.circle,
               border: Border.all(color: Colors.white, width: 2),
-              boxShadow: const [
-                BoxShadow(color: Color(0x5914B8A6), blurRadius: 8, spreadRadius: 2),
+              boxShadow: [
+                BoxShadow(color: ringColor, blurRadius: 8, spreadRadius: 2),
               ],
             ),
           ),
@@ -66,5 +73,4 @@ class _PulsingDotState extends State<PulsingDot> with SingleTickerProviderStateM
     );
   }
 }
-
 
