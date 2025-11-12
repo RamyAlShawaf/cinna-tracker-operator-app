@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
-// import 'dart:math' as math; // no longer needed after removing raindrop pin
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:geolocator/geolocator.dart';
@@ -31,6 +31,9 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
   final MapController _mapController = MapController();
   StreamSubscription<Position>? positionSub;
   LatLng? _current;
+  // Smoothed/snapped current position for display
+  LatLng? _displayCurrent;
+  double? _lastAccuracyMeters;
   bool _followOnUpdate = false;
 
   bool get _usingMapTiler => const String.fromEnvironment('MAPTILER_KEY', defaultValue: '').isNotEmpty;
@@ -38,6 +41,8 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
   List<Map<String, dynamic>> _stops = const [];
   String? _selectedStopId;
   List<LatLng> _route = const [];
+  // Route rendered on the map, trimmed to start at the current pulsing dot
+  List<LatLng> _displayRoute = const [];
   bool _loadingStops = false;
   bool _loadingRoute = false;
   bool _routeFetchInFlight = false;
@@ -95,7 +100,7 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
     final toLng = stop['lng'] as num?;
     if (toLat == null || toLng == null) return;
     _routeFetchInFlight = true;
-    setState(() { _loadingRoute = true; _route = const []; });
+    setState(() { _loadingRoute = true; _route = const []; _displayRoute = const []; });
     try {
       final url = Uri.parse('$serverUrl/api/operator/route?from_lat=${_current!.latitude}&from_lng=${_current!.longitude}&to_lat=$toLat&to_lng=$toLng');
       final r = await http.get(url);
@@ -111,7 +116,11 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
         }
         // Only store/display the route when not paused
         if (!paused) {
-          setState(() { _route = poly; });
+          setState(() {
+            _route = poly;
+          });
+          // Recompute the display route so that the polyline head attaches to the pulsing dot
+          _recomputeDisplayRoute();
         } else {
           setState(() {});
         }
@@ -131,6 +140,38 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
     return {
       'coordinates': _route.map((p) => {'lat': p.latitude, 'lng': p.longitude}).toList(),
     };
+  }
+
+  void _recomputeDisplayRoute() {
+    if (paused) {
+      if (_displayRoute.isNotEmpty) setState(() { _displayRoute = const []; });
+      return;
+    }
+    final cur = _current;
+    if (cur == null || _route.isEmpty) {
+      if (_displayRoute.isNotEmpty) setState(() { _displayRoute = const []; });
+      return;
+    }
+    // Find nearest point on the route to the current position
+    final distance = const Distance();
+    var nearestIdx = 0;
+    var nearestMeters = double.infinity;
+    for (var i = 0; i < _route.length; i++) {
+      final d = distance(cur, _route[i]);
+      if (d < nearestMeters) {
+        nearestMeters = d;
+        nearestIdx = i;
+      }
+    }
+    // Trim all points up to nearestIdx so we don't render a tail behind the marker
+    final trimmed = <LatLng>[];
+    trimmed.add(cur);
+    for (var i = nearestIdx + 1; i < _route.length; i++) {
+      trimmed.add(_route[i]);
+    }
+    // Update only if changed to avoid unnecessary rebuild churn
+    _displayRoute = trimmed;
+    if (mounted) setState(() {});
   }
 
   Future<void> _startSession() async {
@@ -188,11 +229,17 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
       locationSettings: const LocationSettings(accuracy: LocationAccuracy.bestForNavigation, distanceFilter: 10),
     ).listen((pos) async {
       _current = LatLng(pos.latitude, pos.longitude);
+      _lastAccuracyMeters = pos.accuracy;
+      // Apply a small forward prediction to compensate latency, then snap to route if close
+      final predicted = _predictAhead(_current!, pos.speed, pos.heading, 0.9);
+      _displayCurrent = _maybeSnapToRoute(predicted);
       if (_followOnUpdate) {
         try {
-          _mapController.move(_current!, 15);
+          _mapController.move(_displayCurrent ?? _current!, 15);
         } catch (_) {}
       }
+      // Keep the displayed polyline attached to the current pulsing dot
+      _recomputeDisplayRoute();
       final payload = {
         'lat': pos.latitude,
         'lng': pos.longitude,
@@ -232,7 +279,7 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
     });
     await _setRemoteStatus('paused');
     // Locally clear the route so the UI reflects paused state immediately
-    setState(() { _route = const []; });
+    setState(() { _route = const []; _displayRoute = const []; });
   }
 
   Future<void> _resumeTracking() async {
@@ -363,11 +410,11 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
                               urlTemplate: _tileUrl(isDark: isDark),
                               userAgentPackageName: 'cinna_tracker_operator_app',
                             ),
-                            if (_route.isNotEmpty && !paused)
+                            if (_displayRoute.isNotEmpty && !paused)
                               PolylineLayer(
                                 polylines: [
                                   Polyline(
-                                    points: _route,
+                                    points: _displayRoute,
                                     strokeWidth: 4,
                                     color: (isDark ? Colors.white : Colors.black).withOpacity(0.9),
                                   ),
@@ -399,7 +446,7 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
                               MarkerLayer(
                                 markers: [
                                   Marker(
-                                    point: _current!,
+                                    point: (_displayCurrent ?? _current!) ,
                                     width: 80,
                                     height: 80,
                                     alignment: Alignment.center,
@@ -541,6 +588,75 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
       ),
     ),
   );
+  }
+}
+
+// Helpers for snapping current position to the closest point on the route polyline
+extension _SnapHelpers on _TrackingScreenState {
+  static const double _snapThresholdMeters = 25; // snap when within 25m of the route
+
+  LatLng _predictAhead(LatLng p, double speedMs, double headingDeg, double seconds) {
+    final s = speedMs.isFinite ? speedMs.clamp(0, 40) : 0.0; // m/s clamp
+    final d = s * seconds;
+    if (d <= 0) return p;
+    final brad = headingDeg * (3.141592653589793 / 180.0);
+    const R = 6378137.0;
+    final lat1 = p.latitude * (3.141592653589793 / 180.0);
+    final lng1 = p.longitude * (3.141592653589793 / 180.0);
+    final lat2 = math.asin(math.sin(lat1) * math.cos(d / R) + math.cos(lat1) * math.sin(d / R) * math.cos(brad));
+    final lng2 = lng1 + math.atan2(math.sin(brad) * math.sin(d / R) * math.cos(lat1), math.cos(d / R) - math.sin(lat1) * math.sin(lat2));
+    return LatLng(lat2 * (180.0 / 3.141592653589793), lng2 * (180.0 / 3.141592653589793));
+  }
+
+  LatLng? _maybeSnapToRoute(LatLng p) {
+    if (_route.isEmpty) return p;
+    // Find nearest segment and projection
+    var bestPoint = p;
+    var bestDist = double.infinity;
+    for (var i = 0; i < _route.length - 1; i++) {
+      final a = _route[i];
+      final b = _route[i + 1];
+      final snapped = _projectOntoSegment(p, a, b);
+      final d = const Distance().as(LengthUnit.Meter, p, snapped);
+      if (d < bestDist) {
+        bestDist = d;
+        bestPoint = snapped;
+      }
+    }
+    if (bestDist <= _snapThresholdMeters) return bestPoint;
+    return p;
+  }
+
+  // Project geographic point p onto segment ab using a local equirectangular projection
+  LatLng _projectOntoSegment(LatLng p, LatLng a, LatLng b) {
+    // Convert to local XY meters around reference latitude
+    final refLat = (a.latitude + b.latitude) / 2.0;
+    double mPerDegLat = 111132.0;
+    double mPerDegLng = 111320.0 * (math.cos(refLat * (3.141592653589793 / 180.0)));
+    final ax = (a.longitude - 0.0) * mPerDegLng;
+    final ay = (a.latitude - 0.0) * mPerDegLat;
+    final bx = (b.longitude - 0.0) * mPerDegLng;
+    final by = (b.latitude - 0.0) * mPerDegLat;
+    final px = (p.longitude - 0.0) * mPerDegLng;
+    final py = (p.latitude - 0.0) * mPerDegLat;
+    final vx = bx - ax;
+    final vy = by - ay;
+    final wx = px - ax;
+    final wy = py - ay;
+    final vLen2 = vx * vx + vy * vy;
+    if (vLen2 == 0) {
+      // a==b
+      return a;
+    }
+    var t = (wx * vx + wy * vy) / vLen2;
+    if (t < 0) t = 0;
+    if (t > 1) t = 1;
+    final sx = ax + t * vx;
+    final sy = ay + t * vy;
+    // Back to lat/lng
+    final snappedLng = sx / mPerDegLng + 0.0;
+    final snappedLat = sy / mPerDegLat + 0.0;
+    return LatLng(snappedLat, snappedLng);
   }
 }
 
