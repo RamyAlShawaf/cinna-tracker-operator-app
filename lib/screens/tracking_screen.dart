@@ -1,7 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
+import 'dart:ui' show Offset;
 import 'package:flutter/material.dart';
+import 'package:flutter/scheduler.dart' show Ticker;
 import 'package:flutter_map/flutter_map.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:http/http.dart' as http;
@@ -33,6 +35,27 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
   LatLng? _current;
   // Smoothed/snapped current position for display
   LatLng? _displayCurrent;
+  // Path-parameterized animation state along current route
+  double _currentS = 0.0;
+  double _desiredS = 0.0;
+  double _desiredTargetS = 0.0;
+  double _desiredV = 0.0; // m/s
+  double _emaSpeed = 0.0;
+  // Route parameterization data (local XY meters + cumulative distances)
+  List<Offset> _routeXY = const [];
+  List<double> _routeCum = const [];
+  double _routeLength = 0.0;
+  // Teleport blend to avoid instant jumps on big corrections/route changes
+  DateTime? _teleportStart;
+  Duration _teleportDur = const Duration(milliseconds: 800);
+  LatLng? _teleportFrom;
+  LatLng? _teleportTo;
+  // Ticker-based render loop for 60fps smoothing
+  Ticker? _ticker;
+  int? _lastTickMs;
+  // Previous projected S/time for speed fallback
+  double? _prevSPing;
+  DateTime? _prevPingAt;
   double? _lastAccuracyMeters;
   bool _followOnUpdate = false;
 
@@ -62,6 +85,7 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
         unawaited(_fetchStops());
       }
     }
+    _ticker = createTicker(_onTick)..start();
   }
 
   String _tileUrl({required bool isDark}) {
@@ -121,6 +145,22 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
           });
           // Recompute the display route so that the polyline head attaches to the pulsing dot
           _recomputeDisplayRoute();
+          // Rebuild route parameterization and align animation to new route
+          _rebuildRouteParam();
+          if (_displayCurrent != null && _route.isNotEmpty) {
+            final proj = _projectPointToS(_displayCurrent!);
+            final to = _positionAtS(proj.s);
+            // Blend visually from current to new route head
+            _teleportFrom = _displayCurrent;
+            _teleportTo = to;
+            final dist = const Distance().as(LengthUnit.Meter, _teleportFrom!, _teleportTo!);
+            final ms = dist.clamp(500, 1400) * 0.15; // ~150ms per 10m, clamped
+            _teleportDur = Duration(milliseconds: ms.toInt());
+            _teleportStart = DateTime.now();
+            _currentS = proj.s;
+            _desiredS = proj.s;
+            _desiredTargetS = proj.s;
+          }
         } else {
           setState(() {});
         }
@@ -147,8 +187,8 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
       if (_displayRoute.isNotEmpty) setState(() { _displayRoute = const []; });
       return;
     }
-    final cur = _current;
-    if (cur == null || _route.isEmpty) {
+    final head = _displayCurrent ?? _current;
+    if (head == null || _route.isEmpty) {
       if (_displayRoute.isNotEmpty) setState(() { _displayRoute = const []; });
       return;
     }
@@ -157,7 +197,7 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
     var nearestIdx = 0;
     var nearestMeters = double.infinity;
     for (var i = 0; i < _route.length; i++) {
-      final d = distance(cur, _route[i]);
+      final d = distance(head, _route[i]);
       if (d < nearestMeters) {
         nearestMeters = d;
         nearestIdx = i;
@@ -165,7 +205,7 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
     }
     // Trim all points up to nearestIdx so we don't render a tail behind the marker
     final trimmed = <LatLng>[];
-    trimmed.add(cur);
+    trimmed.add(head);
     for (var i = nearestIdx + 1; i < _route.length; i++) {
       trimmed.add(_route[i]);
     }
@@ -230,16 +270,50 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
     ).listen((pos) async {
       _current = LatLng(pos.latitude, pos.longitude);
       _lastAccuracyMeters = pos.accuracy;
-      // Apply a small forward prediction to compensate latency, then snap to route if close
-      final predicted = _predictAhead(_current!, pos.speed, pos.heading, 0.9);
-      _displayCurrent = _maybeSnapToRoute(predicted);
-      if (_followOnUpdate) {
-        try {
-          _mapController.move(_displayCurrent ?? _current!, 15);
-        } catch (_) {}
+      // Update motion plan based on route presence
+      if (_route.isNotEmpty && _routeLength > 0) {
+        final proj = _projectPointToS(_current!);
+        final sPing = proj.s;
+        // Speed smoothing: prefer sensor speed, fallback to ds/dt
+        var vPing = (pos.speed.isFinite ? pos.speed : 0.0).clamp(0.0, 50.0);
+        final now = DateTime.now();
+        if ((vPing == 0.0 || !vPing.isFinite) && _prevSPing != null && _prevPingAt != null) {
+          final ds = sPing - _prevSPing!;
+          final dt = now.difference(_prevPingAt!).inMilliseconds / 1000.0;
+          if (dt > 0.2) vPing = (ds / dt).clamp(0.0, 50.0);
+        }
+        _prevSPing = sPing;
+        _prevPingAt = now;
+        _emaSpeed = _emaSpeed == 0.0 ? vPing : (_emaSpeed * 0.85 + vPing * 0.15);
+        final vSmoothed = _emaSpeed.clamp(0.0, 50.0);
+        const leadSec = 0.9;
+        _desiredV = vSmoothed;
+        final newTarget = sPing + vSmoothed * leadSec;
+        _desiredTargetS = newTarget;
+        if (_displayCurrent == null) {
+          _currentS = sPing;
+          _desiredS = sPing;
+          _desiredTargetS = sPing + vSmoothed * leadSec;
+          _displayCurrent = _positionAtS(sPing);
+        }
+        // Large correction? Blend visually instead of snapping
+        final bigJump = (newTarget - _currentS).abs() > 120.0;
+        if (bigJump) {
+          _teleportFrom = _displayCurrent;
+          _teleportTo = _positionAtS(sPing);
+          final dist = const Distance().as(LengthUnit.Meter, _teleportFrom!, _teleportTo!);
+          final ms = (dist * 0.12).clamp(450, 1200); // ~120ms per 10m
+          _teleportDur = Duration(milliseconds: ms.toInt());
+          _teleportStart = DateTime.now();
+        }
+        // Keep the displayed polyline attached to the current pulsing dot
+        _recomputeDisplayRoute();
+      } else {
+        // No route available: simple forward prediction and display
+        final predicted = _predictAhead(_current!, pos.speed, pos.heading, 0.9);
+        _displayCurrent = predicted;
+        _recomputeDisplayRoute();
       }
-      // Keep the displayed polyline attached to the current pulsing dot
-      _recomputeDisplayRoute();
       final payload = {
         'lat': pos.latitude,
         'lng': pos.longitude,
@@ -376,6 +450,7 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
   @override
   void dispose() {
     positionSub?.cancel();
+    _ticker?.dispose();
     super.dispose();
   }
 
@@ -594,6 +669,8 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
 // Helpers for snapping current position to the closest point on the route polyline
 extension _SnapHelpers on _TrackingScreenState {
   static const double _snapThresholdMeters = 25; // snap when within 25m of the route
+  static const double _tau = 0.28; // response for currentS -> desiredS
+  static const double _tauTarget = 0.40; // response for desiredS -> desiredTargetS
 
   LatLng _predictAhead(LatLng p, double speedMs, double headingDeg, double seconds) {
     final s = speedMs.isFinite ? speedMs.clamp(0, 40) : 0.0; // m/s clamp
@@ -657,6 +734,141 @@ extension _SnapHelpers on _TrackingScreenState {
     final snappedLng = sx / mPerDegLng + 0.0;
     final snappedLat = sy / mPerDegLat + 0.0;
     return LatLng(snappedLat, snappedLng);
+  }
+
+  // Build local XY and cumulative distances for current route
+  void _rebuildRouteParam() {
+    if (_route.isEmpty) {
+      _routeXY = const [];
+      _routeCum = const [];
+      _routeLength = 0.0;
+      return;
+    }
+    final refLat = _route.first.latitude * (3.141592653589793 / 180.0);
+    final mPerDegLat = 111132.0;
+    final mPerDegLng = 111320.0 * math.cos(refLat);
+    final xy = <Offset>[];
+    for (final p in _route) {
+      xy.add(Offset(p.longitude * mPerDegLng, p.latitude * mPerDegLat));
+    }
+    final cum = <double>[0.0];
+    var total = 0.0;
+    for (var i = 0; i < xy.length - 1; i++) {
+      final d = (xy[i + 1] - xy[i]).distance;
+      total += d;
+      cum.add(total);
+    }
+    _routeXY = xy;
+    _routeCum = cum;
+    _routeLength = total;
+  }
+
+  // Position along route at distance s (meters)
+  LatLng _positionAtS(double s) {
+    if (_route.isEmpty || _routeLength <= 0) {
+      return _current ?? const LatLng(0, 0);
+    }
+    final ss = s.clamp(0.0, _routeLength);
+    var i = 0;
+    while (i < _routeCum.length - 1 && _routeCum[i + 1] < ss) i++;
+    final segStartS = _routeCum[i];
+    final segLen = (_routeCum[i + 1] - segStartS).clamp(1e-6, 1e9);
+    final t = (ss - segStartS) / segLen;
+    final a = _routeXY[i];
+    final b = _routeXY[i + 1];
+    final x = a.dx + (b.dx - a.dx) * t;
+    final y = a.dy + (b.dy - a.dy) * t;
+    // Back to lat/lng using first point scaling (sufficient locally)
+    final refLat = _route.first.latitude * (3.141592653589793 / 180.0);
+    final mPerDegLat = 111132.0;
+    final mPerDegLng = 111320.0 * math.cos(refLat);
+    return LatLng(y / mPerDegLat, x / mPerDegLng);
+  }
+
+  // Project a point to distance s along route
+  ({double s, int idx, double t}) _projectPointToS(LatLng p) {
+    if (_route.isEmpty || _routeXY.length < 2) return (s: 0.0, idx: 0, t: 0.0);
+    final refLat = _route.first.latitude * (3.141592653589793 / 180.0);
+    final mPerDegLat = 111132.0;
+    final mPerDegLng = 111320.0 * math.cos(refLat);
+    final px = p.longitude * mPerDegLng;
+    final py = p.latitude * mPerDegLat;
+    var bestIdx = 0;
+    var bestT = 0.0;
+    var bestDist = double.infinity;
+    for (var i = 0; i < _routeXY.length - 1; i++) {
+      final a = _routeXY[i];
+      final b = _routeXY[i + 1];
+      final vx = b.dx - a.dx;
+      final vy = b.dy - a.dy;
+      final vlen2 = vx * vx + vy * vy;
+      var t = vlen2 == 0 ? 0.0 : (((px - a.dx) * vx + (py - a.dy) * vy) / vlen2);
+      if (t < 0) t = 0;
+      if (t > 1) t = 1;
+      final sx = a.dx + t * vx;
+      final sy = a.dy + t * vy;
+      final dx = px - sx;
+      final dy = py - sy;
+      final dist = math.sqrt(dx * dx + dy * dy);
+      if (dist < bestDist) {
+        bestDist = dist;
+        bestIdx = i;
+        bestT = t;
+      }
+    }
+    final segLen = (_routeCum[bestIdx + 1] - _routeCum[bestIdx]).clamp(1e-6, 1e9);
+    final s = _routeCum[bestIdx] + segLen * bestT;
+    return (s: s, idx: bestIdx, t: bestT);
+  }
+
+  // rAF-like ticker loop
+  void _onTick(Duration elapsed) {
+    if (_route.isEmpty || _routeLength <= 0) return;
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    final last = _lastTickMs ?? nowMs;
+    var dt = (nowMs - last) / 1000.0;
+    if (dt < 0) dt = 0;
+    if (dt > 0.08) dt = 0.08;
+    _lastTickMs = nowMs;
+    // Advance desired target along time by desired speed
+    _desiredTargetS += (_desiredV > 0 ? _desiredV : 0) * dt;
+    // Ease desiredS -> desiredTargetS
+    final errT = _desiredTargetS - _desiredS;
+    final alphaT = 1 - math.exp(-dt / _tauTarget);
+    _desiredS += errT * alphaT;
+    // Ease currentS -> desiredS with speed clamp
+    final err = _desiredS - _currentS;
+    final alpha = 1 - math.exp(-dt / _tau);
+    final maxV = (_desiredV + 4.0).clamp(2.0, 50.0); // add extra headroom to catch up
+    final maxStep = maxV * dt;
+    final step = err * alpha * 1.5;
+    final clamped = step.clamp(-maxStep, maxStep);
+    _currentS += clamped;
+    // Compute position at currentS
+    var pos = _positionAtS(_currentS);
+    // If teleport blend active, override with blended position
+    if (_teleportStart != null && _teleportFrom != null && _teleportTo != null) {
+      final t = (nowMs - _teleportStart!.millisecondsSinceEpoch) / _teleportDur.inMilliseconds;
+      final tt = t < 0.5 ? 4 * t * t * t : 1 - math.pow(-2 * t + 2, 3) / 2;
+      final lat = _teleportFrom!.latitude + (_teleportTo!.latitude - _teleportFrom!.latitude) * tt;
+      final lng = _teleportFrom!.longitude + (_teleportTo!.longitude - _teleportFrom!.longitude) * tt;
+      pos = LatLng(lat, lng);
+      if (t >= 1) {
+        _teleportStart = null;
+        _teleportFrom = null;
+        _teleportTo = null;
+      }
+    }
+    // Update display and optionally follow
+    _displayCurrent = pos;
+    if (_followOnUpdate) {
+      try {
+        _mapController.move(_displayCurrent!, 15);
+      } catch (_) {}
+    }
+    if (mounted) {
+      setState(() {});
+    }
   }
 }
 
