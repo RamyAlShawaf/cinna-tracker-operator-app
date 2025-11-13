@@ -41,10 +41,19 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
   double _desiredTargetS = 0.0;
   double _desiredV = 0.0; // m/s
   double _emaSpeed = 0.0;
+  // Stationary gating
+  bool _isStationary = false;
+  final List<double> _sHistS = [];
+  final List<DateTime> _sHistT = [];
+  final double _speedThreshMs = 0.8; // m/s
+  final double _dispMetersThresh = 6.0; // meters
+  final Duration _dispWindow = const Duration(seconds: 5);
   // Route parameterization data (local XY meters + cumulative distances)
   List<Offset> _routeXY = const [];
   List<double> _routeCum = const [];
   double _routeLength = 0.0;
+  // Heartbeat to keep session alive even when stationary/paused
+  Timer? _heartbeatTimer;
   // Teleport blend to avoid instant jumps on big corrections/route changes
   DateTime? _teleportStart;
   Duration _teleportDur = const Duration(milliseconds: 800);
@@ -264,6 +273,7 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
     });
     _followOnUpdate = follow;
     await _setRemoteStatus('online');
+    _startHeartbeat();
     positionSub?.cancel();
     positionSub = Geolocator.getPositionStream(
       locationSettings: const LocationSettings(accuracy: LocationAccuracy.bestForNavigation, distanceFilter: 10),
@@ -287,9 +297,31 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
         _emaSpeed = _emaSpeed == 0.0 ? vPing : (_emaSpeed * 0.85 + vPing * 0.15);
         final vSmoothed = _emaSpeed.clamp(0.0, 50.0);
         const leadSec = 0.9;
-        _desiredV = vSmoothed;
-        final newTarget = sPing + vSmoothed * leadSec;
-        _desiredTargetS = newTarget;
+        // Update stationary history and gate
+        _sHistS.add(sPing);
+        _sHistT.add(now);
+        // Trim history to ~10s
+        while (_sHistT.isNotEmpty && now.difference(_sHistT.first) > const Duration(seconds: 10)) {
+          _sHistT.removeAt(0);
+          _sHistS.removeAt(0);
+        }
+        // Compute displacement over window
+        final cutoff = now.subtract(_dispWindow);
+        double minS = sPing;
+        for (var i = _sHistT.length - 1; i >= 0; i--) {
+          if (_sHistT[i].isBefore(cutoff)) break;
+          if (_sHistS[i] < minS) minS = _sHistS[i];
+        }
+        final disp = (sPing - minS).clamp(0.0, double.infinity);
+        _isStationary = (vSmoothed < _speedThreshMs) && (disp < _dispMetersThresh);
+        if (_isStationary) {
+          _desiredV = 0.0;
+          _desiredTargetS = sPing; // no lookahead when stationary
+        } else {
+          _desiredV = vSmoothed;
+          final newTarget = sPing + vSmoothed * leadSec;
+          _desiredTargetS = newTarget;
+        }
         if (_displayCurrent == null) {
           _currentS = sPing;
           _desiredS = sPing;
@@ -297,7 +329,7 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
           _displayCurrent = _positionAtS(sPing);
         }
         // Large correction? Blend visually instead of snapping
-        final bigJump = (newTarget - _currentS).abs() > 120.0;
+        final bigJump = (!_isStationary) && ((_desiredTargetS - _currentS).abs() > 120.0);
         if (bigJump) {
           _teleportFrom = _displayCurrent;
           _teleportTo = _positionAtS(sPing);
@@ -354,6 +386,8 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
     await _setRemoteStatus('paused');
     // Locally clear the route so the UI reflects paused state immediately
     setState(() { _route = const []; _displayRoute = const []; });
+    // Keep heartbeat running while paused to prevent unintended session end
+    _startHeartbeat();
   }
 
   Future<void> _resumeTracking() async {
@@ -389,6 +423,7 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
       } catch (_) {}
     }
     await positionSub?.cancel();
+    _stopHeartbeat();
     if (!mounted) return;
     Navigator.pop(context);
   }
@@ -451,6 +486,7 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
   void dispose() {
     positionSub?.cancel();
     _ticker?.dispose();
+    _stopHeartbeat();
     super.dispose();
   }
 
@@ -668,6 +704,22 @@ class _TrackingScreenState extends State<TrackingScreen> with TickerProviderStat
 
 // Helpers for snapping current position to the closest point on the route polyline
 extension _SnapHelpers on _TrackingScreenState {
+  void _startHeartbeat() {
+    // Heartbeat every 20s to keep session alive (server watchdog ends after 5 min idle)
+    _heartbeatTimer?.cancel();
+    if (!sessionStarted || publishToken == null) return;
+    _heartbeatTimer = Timer.periodic(const Duration(seconds: 20), (_) {
+      // Reflect current state: 'paused' while paused, otherwise 'online'
+      final desired = paused ? 'paused' : 'online';
+      unawaited(_setRemoteStatus(desired));
+    });
+  }
+
+  void _stopHeartbeat() {
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = null;
+  }
+
   static const double _snapThresholdMeters = 25; // snap when within 25m of the route
   static const double _tau = 0.28; // response for currentS -> desiredS
   static const double _tauTarget = 0.40; // response for desiredS -> desiredTargetS
@@ -831,7 +883,9 @@ extension _SnapHelpers on _TrackingScreenState {
     if (dt > 0.08) dt = 0.08;
     _lastTickMs = nowMs;
     // Advance desired target along time by desired speed
-    _desiredTargetS += (_desiredV > 0 ? _desiredV : 0) * dt;
+    if (!_isStationary) {
+      _desiredTargetS += (_desiredV > 0 ? _desiredV : 0) * dt;
+    }
     // Ease desiredS -> desiredTargetS
     final errT = _desiredTargetS - _desiredS;
     final alphaT = 1 - math.exp(-dt / _tauTarget);
