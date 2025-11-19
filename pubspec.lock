@@ -198,14 +198,6 @@ packages:
     description: flutter
     source: sdk
     version: "0.0.0"
-  flutter_foreground_task:
-    dependency: "direct main"
-    description:
-      name: flutter_foreground_task
-      sha256: "6cf10a27f5e344cd2ecad0752d3a5f4ec32846d82fda8753b3fe2480ebb832a3"
-      url: "https://pub.dev"
-    source: hosted
-    version: "6.5.0"
   flutter_launcher_icons:
     dependency: "direct dev"
     description:
@@ -516,10 +508,10 @@ packages:
     dependency: transitive
     description:
       name: meta
-      sha256: e3641ec5d63ebf0d9b41bd43201a66e3fc79a65db5f61fc181f04cd27aab950c
+      sha256: "23f08335362185a5ea2ad3a4e597f1375e78bce8a040df5c600c8d3552ef2394"
       url: "https://pub.dev"
     source: hosted
-    version: "1.16.0"
+    version: "1.17.0"
   mgrs_dart:
     dependency: transitive
     description:
@@ -539,10 +531,9 @@ packages:
   mobile_scanner:
     dependency: "direct main"
     description:
-      name: mobile_scanner
-      sha256: "5e7e09d904dc01de071b79b3f3789b302b0ed3c9c963109cd3f83ad90de62ecf"
-      url: "https://pub.dev"
-    source: hosted
+      path: "third_party/mobile_scanner"
+      relative: true
+    source: path
     version: "7.1.2"
   path:
     dependency: transitive
@@ -817,10 +808,10 @@ packages:
     dependency: transitive
     description:
       name: test_api
-      sha256: "522f00f556e73044315fa4585ec3270f1808a4b186c936e612cab0b565ff1e00"
+      sha256: ab2726c1a94d3176a45960b6234466ec367179b87dd74f1611adb1f3b5fb9d55
       url: "https://pub.dev"
     source: hosted
-    version: "0.7.6"
+    version: "0.7.7"
   typed_data:
     dependency: transitive
     description:
@@ -854,12 +845,11 @@ packages:
     source: hosted
     version: "6.3.24"
   url_launcher_ios:
-    dependency: transitive
+    dependency: "direct overridden"
     description:
-      name: url_launcher_ios
-      sha256: "6b63f1441e4f653ae799166a72b50b1767321ecc263a57aadf825a7a2a5477d9"
-      url: "https://pub.dev"
-    source: hosted
+      path: "third_party/url_launcher_ios"
+      relative: true
+    source: path
     version: "6.3.5"
   url_launcher_linux:
     dependency: transitive

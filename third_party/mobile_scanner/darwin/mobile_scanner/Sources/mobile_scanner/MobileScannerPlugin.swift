@@ -11,9 +11,25 @@ import VideoToolbox
   import FlutterMacOS
 #endif
 
-public class MobileScannerPlugin: NSObject, FlutterPlugin, FlutterStreamHandler, FlutterTexture, AVCaptureVideoDataOutputSampleBufferDelegate {
+private final class MobileScannerTexture: NSObject, FlutterTexture {
+    weak var plugin: MobileScannerPlugin?
+    
+    init(plugin: MobileScannerPlugin) {
+        self.plugin = plugin
+    }
+    
+    func copyPixelBuffer() -> Unmanaged<CVPixelBuffer>? {
+        guard let buffer = plugin?.latestBuffer else {
+            return nil
+        }
+        return Unmanaged.passRetained(buffer)
+    }
+}
+
+public class MobileScannerPlugin: NSObject, FlutterPlugin, FlutterStreamHandler, AVCaptureVideoDataOutputSampleBufferDelegate {
     
     let registry: FlutterTextureRegistry
+    private lazy var flutterTexture = MobileScannerTexture(plugin: self)
     
     // Sink for publishing event changes
     var sink: FlutterEventSink!
@@ -128,14 +144,6 @@ public class MobileScannerPlugin: NSObject, FlutterPlugin, FlutterStreamHandler,
     public func onCancel(withArguments arguments: Any?) -> FlutterError? {
         sink = nil
         return nil
-    }
-    
-    // FlutterTexture
-    public func copyPixelBuffer() -> Unmanaged<CVPixelBuffer>? {
-        if latestBuffer == nil {
-            return nil
-        }
-        return Unmanaged<CVPixelBuffer>.passRetained(latestBuffer)
     }
     
     var nextScanTime = 0.0
@@ -338,7 +346,7 @@ public class MobileScannerPlugin: NSObject, FlutterPlugin, FlutterStreamHandler,
             return
         }
 
-        textureId = textureId ?? registry.register(self)
+        textureId = textureId ?? registry.register(flutterTexture)
         captureSession = AVCaptureSession()
 
         let argReader = MapArgumentReader(call.arguments as? [String: Any])
@@ -941,7 +949,7 @@ public class MobileScannerPlugin: NSObject, FlutterPlugin, FlutterStreamHandler,
 #if os(iOS)
         case #keyPath(AVCaptureDevice.videoZoomFactor):
             if let zoomScale = change?[.newKey] as? CGFloat,
-               let device = object as? AVCaptureDevice {
+               object is AVCaptureDevice {
                 
                 let scale = getScaleFromZoomFactor(actualScale: zoomScale)
 

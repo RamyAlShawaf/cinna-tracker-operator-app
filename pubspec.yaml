@@ -16,15 +16,28 @@ dependencies:
   cupertino_icons: ^1.0.6
   mobile_scanner: ^7.1.2
   geolocator: ^13.0.1
-  flutter_foreground_task: ^6.3.1
   http: ^1.2.2
   shared_preferences: ^2.3.2
   flutter_map: ^6.2.1
   latlong2: ^0.9.0
   image_picker: ^1.1.2
 
+  # NOTE: Foreground service plugin is intentionally disabled for now.
+  # The iOS side of `flutter_foreground_task` is currently causing a crash
+  # during plugin registration on app relaunch (EXC_BAD_ACCESS in
+  # SwiftFlutterForegroundTaskPlugin.register). Re‑enable this dependency
+  # once we add Android‑only foreground tracking, with platform‑specific
+  # configuration to avoid iOS registration.
+  # flutter_foreground_task: ^6.3.1
+
   # If using Supabase Realtime in the app (optional)
   supabase_flutter: ^2.6.0
+
+dependency_overrides:
+  mobile_scanner:
+    path: third_party/mobile_scanner
+  url_launcher_ios:
+    path: third_party/url_launcher_ios
 
 dev_dependencies:
   flutter_test:

@@ -1,5 +1,5 @@
 # Uncomment this line to define a global platform for your project
-platform :ios, '13.0'
+# platform :ios, '13.0'
 
 # CocoaPods analytics sends network stats synchronously affecting flutter build latency.
 ENV['COCOAPODS_DISABLE_STATS'] = 'true'
@@ -28,8 +28,6 @@ require File.expand_path(File.join('packages', 'flutter_tools', 'bin', 'podhelpe
 flutter_ios_podfile_setup
 
 target 'Runner' do
-  use_frameworks! :linkage => :static
-
   flutter_install_all_ios_pods File.dirname(File.realpath(__FILE__))
   target 'RunnerTests' do
     inherit! :search_paths
@@ -39,16 +37,5 @@ end
 post_install do |installer|
   installer.pods_project.targets.each do |target|
     flutter_additional_ios_build_settings(target)
-    # Enforce iOS 13.0 for all pods and disable user script sandboxing (Xcode 15+)
-    target.build_configurations.each do |config|
-      config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '13.0'
-      config.build_settings['ENABLE_USER_SCRIPT_SANDBOXING'] = 'NO'
-      # Module verification fails for Flutter plugins because the generated Swift
-      # headers import the Flutter umbrella module, which is only available once
-      # Flutter's build scripts have run. Disable CLANG_VERIFY_MODULES to avoid
-      # “module 'Flutter' not found” failures during the VerifyModule build phase.
-      config.build_settings['CLANG_VERIFY_MODULES'] = 'NO'
-    end
-    # Keep default header generation for Swift pods such as mobile_scanner
   end
 end

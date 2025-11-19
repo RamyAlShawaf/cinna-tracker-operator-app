@@ -24,8 +24,11 @@ flutter run -d android --dart-define=BACKEND_URL=http://10.0.2.2:3000
 # Physical device on same Wi‑Fi (replace with your Mac's LAN IP)
 flutter run --dart-define=BACKEND_URL=http://192.168.x.x:3000
 ```
-# Main method
+# Main method (debugger)
 flutter run --dart-define-from-file=dart_defines.json
+
+# Main method (release) - more stable atm
+flutter run --release --dart-define-from-file=dart_defines.json
 
 iOS setup
 - In Xcode, enable Background Modes → Location updates
